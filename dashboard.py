@@ -1270,14 +1270,110 @@ with st.sidebar:
     if st.button("🔄 Refresh Data", use_container_width=True):
         st.cache_data.clear(); st.rerun()
 
-    buf = io.BytesIO()
-    export_df = orders_df.copy()
-    export_df["document_date"] = export_df["document_date"].astype(str)
-    export_df.to_excel(buf, index=False, engine="xlsxwriter")
-    st.download_button("📥 Download Report", buf.getvalue(),
-                       "ms_enterprises_report.xlsx",
-                       "application/vnd.ms-excel",
-                       use_container_width=True)
+    # ── Full detail Excel export ──────────────────────────────
+    try:
+        _conn_ex = sqlite3.connect(DB_PATH)
+        full_export = pd.read_sql_query("""
+            SELECT
+                o.po_number                     AS "Invoice / PO No.",
+                o.document_date                 AS "Date",
+                o.financial_year                AS "Financial Year",
+                o.customer_name                 AS "Client / Factory",
+                o.consignee_name                AS "Consignee Name",
+                o.consignee_state               AS "State",
+                o.consignee_city                AS "City",
+                m.name_standardized             AS "Material",
+                m.category                      AS "Category",
+                ROUND(oi.quantity, 3)            AS "Quantity (MT)",
+                ROUND(oi.rate, 2)               AS "Rate per MT (₹)",
+                ROUND(oi.amount, 2)             AS "Line Amount (₹)",
+                o.total_amount                  AS "PO Total Amount (₹)",
+                o.vendor_name                   AS "Vendor",
+                o.gstin                         AS "GST No."
+            FROM orders o
+            LEFT JOIN order_items oi ON oi.order_id = o.id
+            LEFT JOIN materials   m  ON m.id = oi.material_id
+            ORDER BY o.document_date DESC, o.id DESC
+        """, _conn_ex)
+        _conn_ex.close()
+
+        # KG → MT normalisation for export
+        buf_ex = io.BytesIO()
+        with pd.ExcelWriter(buf_ex, engine="xlsxwriter") as writer:
+            full_export.to_excel(writer, index=False, sheet_name="All Orders")
+            wb  = writer.book
+            ws  = writer.sheets["All Orders"]
+
+            # Formatting
+            hdr_fmt = wb.add_format({
+                "bold": True, "bg_color": "#6366F1", "font_color": "#FFFFFF",
+                "border": 1, "border_color": "#E2E8F0", "text_wrap": True,
+                "valign": "vcenter", "align": "center"
+            })
+            num_fmt  = wb.add_format({"num_format": "#,##0.00", "border": 1, "border_color": "#E2E8F0"})
+            text_fmt = wb.add_format({"border": 1, "border_color": "#E2E8F0"})
+            alt_fmt  = wb.add_format({"bg_color": "#F1F5F9", "border": 1, "border_color": "#E2E8F0"})
+
+            # Column widths
+            col_widths = [18, 12, 12, 28, 28, 16, 16, 28, 18, 14, 16, 16, 18, 20, 18]
+            for i, w in enumerate(col_widths):
+                ws.set_column(i, i, w)
+            ws.set_row(0, 28, hdr_fmt)
+
+            # Re-write header with format
+            for ci, col in enumerate(full_export.columns):
+                ws.write(0, ci, col, hdr_fmt)
+
+            # Data rows with alternating colour
+            num_cols = {"Quantity (MT)", "Rate per MT (₹)", "Line Amount (₹)", "PO Total Amount (₹)"}
+            for ri, row in enumerate(full_export.itertuples(index=False), start=1):
+                bg = wb.add_format({
+                    "bg_color": "#FFFFFF" if ri % 2 == 1 else "#F8FAFC",
+                    "border": 1, "border_color": "#E2E8F0"
+                })
+                num_bg = wb.add_format({
+                    "bg_color": "#FFFFFF" if ri % 2 == 1 else "#F8FAFC",
+                    "num_format": "#,##0.00", "border": 1, "border_color": "#E2E8F0"
+                })
+                for ci, col in enumerate(full_export.columns):
+                    val = getattr(row, col.replace(" ", "_").replace("/", "_").replace("(", "").replace(")", "").replace(".", "").replace("₹", ""), None)
+                    val = row[ci]
+                    ws.write(ri, ci, val, num_bg if col in num_cols else bg)
+
+            # Freeze top row
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, len(full_export), len(full_export.columns) - 1)
+
+            # Summary sheet
+            summary_data = {
+                "Metric": ["Total Revenue (₹)", "Total Quantity (MT)", "Total Orders",
+                           "Unique Clients", "Unique Materials", "States Covered"],
+                "Value": [
+                    full_export["PO Total Amount (₹)"].sum() / len(full_export["Invoice / PO No."].unique()) if not full_export.empty else 0,
+                    full_export["Quantity (MT)"].sum(),
+                    full_export["Invoice / PO No."].nunique(),
+                    full_export["Client / Factory"].nunique(),
+                    full_export["Material"].nunique(),
+                    full_export["State"].nunique(),
+                ]
+            }
+            # fix revenue
+            summary_data["Value"][0] = orders_df["total_amount"].sum()
+            pd.DataFrame(summary_data).to_excel(writer, index=False, sheet_name="Summary")
+
+        st.download_button("📥 Download Full Excel", buf_ex.getvalue(),
+                           "ms_enterprises_full_report.xlsx",
+                           "application/vnd.ms-excel",
+                           use_container_width=True)
+    except Exception as e:
+        buf = io.BytesIO()
+        export_df = orders_df.copy()
+        export_df["document_date"] = export_df["document_date"].astype(str)
+        export_df.to_excel(buf, index=False, engine="xlsxwriter")
+        st.download_button("📥 Download Report", buf.getvalue(),
+                           "ms_enterprises_report.xlsx",
+                           "application/vnd.ms-excel",
+                           use_container_width=True)
 
     # PPT download
     if _PPTX_OK:
