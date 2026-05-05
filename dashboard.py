@@ -281,7 +281,7 @@ def generate_ppt(orders_df, items_df):
                 bold_flag = val == str(rank)
                 _add_text(slide, val, cx + 0.05, row_y + 0.05, 2.2, 0.35,
                           size=9.5, bold=(rank == 1 and val == rev_str),
-                          color=(ACCENTS[rank - 1] if val == str(rank) else C_SLATE))
+                          color=(ACCENTS[(rank - 1) % len(ACCENTS)] if val == str(rank) else C_SLATE))
             row_y += 0.42
 
     # ══════════════════════════════════════════════════════════
